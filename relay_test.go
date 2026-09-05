@@ -202,8 +202,8 @@ func TestRejectsBadAddresses(t *testing.T) {
 	for _, path := range []string{
 		"/r/",
 		"/r/zu-kurz",
-		"/r/0123456789ABCDEF0123456789ABCDEF", // Grossbuchstaben
-		"/r/0123456789abcdef0123456789abcdeg", // kein Hex
+		"/r/0123456789ABCDEF0123456789ABCDEF",  // Grossbuchstaben
+		"/r/0123456789abcdef0123456789abcdeg",  // kein Hex
 		"/r/0123456789abcdef0123456789abcdef0", // zu lang
 	} {
 		if _, ok := roomFrom(path); ok {

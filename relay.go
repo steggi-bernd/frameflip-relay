@@ -240,4 +240,3 @@ func sanitize(s string) string {
 
 	return b.String()
 }
-

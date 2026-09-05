@@ -73,6 +73,17 @@ Splitting it this way means the relay never has to parse a payload to decide wha
 do with it — the frame type already says so. A payload that looks like a control
 message cannot be mistaken for one.
 
+### A note for whoever writes a client
+
+Raise your library's read limit to match `RELAY_MAX_MESSAGE` (1 MiB by default).
+Several WebSocket libraries default to 32 KB — Go's `coder/websocket` among them —
+which is enough for every metrics message and too small for the first preview image.
+The failure is unhelpful when it arrives: the transfer dies with a "message too big"
+raised by *your own* reader, and the relay looks like the culprit.
+
+This is not hypothetical. It is how the first end-to-end test against the live server
+failed.
+
 ## 4. What goes inside the encrypted frames
 
 That is between FrameFlip and the app; the relay neither knows nor cares. For

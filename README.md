@@ -86,6 +86,21 @@ roughly one message in 256 as a text frame — where the other side would have r
 as a control message. The frame type now travels with the message instead of being
 guessed.
 
+### Checking a real installation
+
+The tests above run against a server inside the same process. They say nothing about
+the way in — certificate, reverse proxy, WebSocket upgrade over the real domain — and
+that is where a deployment actually goes wrong.
+
+```bash
+go run ./probe wss://relay.example.org
+```
+
+It opens a room, plays both sides, and reports each step: the greeting, both
+directions of forwarding, a payload beginning with `{`, 250 KB in one message, a
+second host being refused, and the departure notice. It leaves nothing behind — the
+room disappears with the connections.
+
 Race detection needs cgo and is therefore not run on Windows; the Docker build runs
 `go vet` and the tests on Linux before it produces a binary.
 
