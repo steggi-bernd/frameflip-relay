@@ -1,0 +1,48 @@
+# Der Relay veroeffentlicht bewusst KEINEN Port nach aussen.
+#
+# Erreichbar wird er allein ueber Caddy, das im selben Docker-Netz steht und TLS
+# beisteuert. Ein eigener offener Port waere ein zweiter Weg hinein, den niemand
+# gebraucht - und einer ohne Zertifikat.
+
+services:
+  frameflip-relay:
+    build: .
+    image: frameflip-relay:latest
+    container_name: frameflip-relay
+    restart: unless-stopped
+
+    environment:
+      RELAY_ADDR: ":8080"
+
+      # Vorschaubilder in Handygroesse liegen bei 100-300 KB. Ein Megabyte laesst
+      # Luft, ohne dass ein Raum als Ablage taugt.
+      RELAY_MAX_MESSAGE: "1048576"
+
+      # Nachrichten, die fuer eine langsame Gegenseite zwischengehalten werden.
+      # Danach wird sie getrennt, statt die schnelle Seite auszubremsen.
+      RELAY_SEND_QUEUE: "32"
+
+      RELAY_IDLE_SECONDS: "90"
+      RELAY_PING_SECONDS: "25"
+
+    networks:
+      - web
+
+    # Ein Dienst, der nur Bytes weiterreicht, braucht weder Rechte noch ein
+    # beschreibbares Dateisystem.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Auf einem Rechner mit 3,7 GB, der nebenher einen Mailserver und LiveKit
+    # traegt, ist eine Obergrenze keine Schikane, sondern Ruecksicht.
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+networks:
+  web:
+    external: true
