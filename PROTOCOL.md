@@ -14,18 +14,23 @@ connections.
 The pairing secret is a random 256-bit key that FrameFlip shows as a QR code. It
 **never crosses the network** — the phone reads it off the screen.
 
-Everything derived from it comes out of one HKDF, and only one of those outputs ever
-reaches the relay:
+Everything derived from it comes out of HKDF-SHA256, and only one of those outputs
+ever reaches the relay. The `info` strings are given exactly, because a second
+implementation has to arrive at the same bytes from this page alone:
 
-| Derived | Purpose | Does the relay see it? |
-|---|---|---|
-| `room = HKDF(key, "room")` | which two connections belong together | **yes** — it needs it |
-| `k_host = HKDF(key, "host")` | encrypts PC → phone | no |
-| `k_client = HKDF(key, "client")` | encrypts phone → PC | no |
+| Derived | `info` | Salt | Length | Does the relay see it? |
+|---|---|---|---|---|
+| room id | `frameflip/v1/room` | empty | 16 bytes, written as 32 lowercase hex | **yes** — it needs it |
+| `k_host` — encrypts PC → phone | `frameflip/v1/host` | `salt_host ‖ salt_client` | 32 bytes | no |
+| `k_client` — encrypts phone → PC | `frameflip/v1/client` | `salt_host ‖ salt_client` | 32 bytes | no |
 
 The room id is a one-way function of the secret. Knowing it lets you find the room;
 it does not let you read anything in it. Separate keys per direction mean a captured
 message cannot be replayed back the way it came.
+
+The two salts are drawn fresh for each connection and exchanged in the open (§4), so
+the message keys differ every session while the room id stays put. The room id has to
+stay put — it is how the two sides find each other at all.
 
 That is why the relay can be a dumb pipe, and why it does not need to be trusted.
 
@@ -84,17 +89,56 @@ raised by *your own* reader, and the relay looks like the culprit.
 This is not hypothetical. It is how the first end-to-end test against the live server
 failed.
 
-## 4. What goes inside the encrypted frames
+## 4. What goes inside the binary frames
 
-That is between FrameFlip and the app; the relay neither knows nor cares. For
-completeness:
+The relay neither knows nor cares — but both ends have to agree exactly, so it is
+written down here rather than in one of them.
+
+### The handshake
+
+Once the relay reports the other side is present, each end sends **one frame in the
+clear**:
 
 ```
-nonce (12 bytes) ‖ AES-256-GCM(counter ‖ payload)
+version (1 byte, currently 0x01) ‖ salt (16 bytes, random)
 ```
 
-The counter runs per direction and rejects anything not strictly increasing — a
-recorded message cannot be played back later.
+Both then derive the two message keys as in §1, with `salt_host ‖ salt_client` in that
+order regardless of which side you are — otherwise the two ends compute different keys.
+
+### Every frame after that
+
+```
+counter (8 bytes, big endian) ‖ tag (16 bytes) ‖ AES-256-GCM(payload)
+```
+
+with the nonce being four zero bytes followed by those same counter bytes, and the
+counter bytes also passed as associated data. 24 bytes of overhead per message; the
+counter starts at 0 for each direction of each connection.
+
+A receiver accepts a frame only if the counter is **greater than** the highest it has
+already accepted, and it advances that mark **only after** the tag verifies. Both
+halves matter. Without the first, a captured frame can be played back inside the same
+session. Without the second, anyone who can reach the room can send one frame with a
+counter of 2⁶⁴−1 and lock the real peer out for good.
+
+### Why the counter is the nonce
+
+Because the key is different every session, and that is the only reason it is safe.
+
+A fixed key with a counter that restarts at 0 is the textbook way to destroy AES-GCM:
+same nonce, different plaintext, and the authentication key falls out. FrameFlip
+restarting would have been exactly that — same pairing key, counter back to zero. The
+per-session salts remove the possibility rather than making it unlikely, and they also
+mean a recording from yesterday will not verify today.
+
+### What this does not do
+
+The handshake is **unauthenticated**. Someone who knows the room id can take a free
+seat and send a salt. They still cannot read anything, and their frames fail the first
+tag check — they can disrupt a pairing attempt, not listen in. Room ids are not
+guessable in practice (128 bits), and the relay's two-connection limit bounds the
+damage.
 
 ## 5. What the relay costs
 
