@@ -231,3 +231,46 @@ func TestSanitize(t *testing.T) {
 		t.Fatalf("sanitize: %s", got)
 	}
 }
+
+// Wer nur zuhoert, bleibt verbunden.
+//
+// Das ist der Normalfall der App: Ein Handy, das Renderfortschritt anzeigt,
+// sendet selbst nichts. Vorher stand auf dem Lesen eine Frist, die nur eine
+// Datennachricht zurueckgesetzt hat - Pongs nicht. Damit flog genau diese Seite
+// im Takt der Frist heraus, und in der App blinkte "verbinde" auf, ohne dass
+// jemand etwas getan hatte.
+//
+// Der Test laeuft bewusst ueber die Frist hinaus. Er dauert damit ein paar
+// Sekunden; die sind es wert, denn ohne echtes Warten ist genau das nicht
+// pruefbar.
+func TestSilentPeerSurvivesIdleTimeout(t *testing.T) {
+	cfg := testConfig()
+	cfg.idleTimeout = 600 * time.Millisecond
+	cfg.pingInterval = 200 * time.Millisecond
+
+	h := newHub(cfg.sendQueue)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/r/", newRelayHandler(h, cfg))
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	base := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	host := dial(t, base, testRoom, roleHost)
+	read(t, host)
+
+	client := dial(t, base, testRoom, roleClient)
+	read(t, host)
+	read(t, client)
+
+	// Der Client schweigt deutlich laenger als die Frist.
+	time.Sleep(cfg.idleTimeout * 3)
+
+	write(t, host, websocket.MessageBinary, []byte("noch da?"))
+
+	if _, msg := read(t, client); msg != "noch da?" {
+		t.Fatalf("der schweigende Zuhoerer wurde getrennt: %s", msg)
+	}
+}

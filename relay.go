@@ -109,12 +109,20 @@ func serve(parent context.Context, h *hub, cfg config, conn *websocket.Conn, id 
 // readLoop nimmt Nachrichten entgegen und reicht Binaerframes weiter.
 func readLoop(ctx context.Context, h *hub, cfg config, conn *websocket.Conn, id string, self *peer) {
 	for {
-		// Wer nichts sendet und auf keinen Ping antwortet, ist weg. Ohne diese
-		// Grenze sammelten sich tote Verbindungen aus Mobilfunknetzen an, die
-		// keinen Abschied schicken.
-		ctxRead, cancelRead := context.WithTimeout(ctx, cfg.idleTimeout)
-		kind, data, err := conn.Read(ctxRead)
-		cancelRead()
+		// KEINE Frist auf das Lesen.
+		//
+		// Hier stand eine, begruendet mit "wer nichts sendet und auf keinen Ping
+		// antwortet, ist weg". Der Code machte daraus etwas anderes: Read kehrt nur
+		// bei einer Datennachricht zurueck, Pongs setzen die Frist nicht zurueck.
+		// Wer also nur zuhoert - und genau das tut ein Handy, das Renderfortschritt
+		// anzeigt - flog alle 90 Sekunden raus. In der App blinkte regelmaessig
+		// "verbinde" auf, ohne dass jemand etwas getan haette.
+		//
+		// Auf Lebendigkeit prueft ohnehin writeLoop: Es pingt im festen Takt und
+		// wartet auf die Antwort. Bleibt sie aus, endet die Schleife, cancel()
+		// greift, und dieses Read bricht mit ab. Die Frist war also nicht nur
+		// falsch, sondern auch ueberfluessig.
+		kind, data, err := conn.Read(ctx)
 
 		if err != nil {
 			_ = conn.Close(websocket.StatusNormalClosure, "")
