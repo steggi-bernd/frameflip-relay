@@ -100,11 +100,24 @@ Once the relay reports the other side is present, each end sends **one frame in 
 clear**:
 
 ```
-version (1 byte, currently 0x01) ‖ salt (16 bytes, random)
+version (1 byte, currently 0x02) ‖ salt (16 bytes, random)
 ```
 
 Both then derive the two message keys as in §1, with `salt_host ‖ salt_client` in that
 order regardless of which side you are — otherwise the two ends compute different keys.
+
+Before either side accepts application data or calls the connection paired, each sends
+one encrypted confirmation. Its plaintext is:
+
+```
+HMAC-SHA256(pairing secret,
+  "frameflip/v2/confirm" ‖ sender role (0x01 host, 0x02 client) ‖ salt_host ‖ salt_client)
+```
+
+The confirmation itself uses the regular encrypted frame below. A receiver only marks
+the peer authenticated after it can decrypt the proof and it matches the expected role
+and both salts in constant time. Someone who occupies a free room slot can still deny
+service, but cannot make the real endpoint appear paired or receive commands/data.
 
 ### Every frame after that
 
@@ -134,11 +147,10 @@ mean a recording from yesterday will not verify today.
 
 ### What this does not do
 
-The handshake is **unauthenticated**. Someone who knows the room id can take a free
-seat and send a salt. They still cannot read anything, and their frames fail the first
-tag check — they can disrupt a pairing attempt, not listen in. Room ids are not
-guessable in practice (128 bits), and the relay's two-connection limit bounds the
-damage.
+The room id is still not an admission credential. Someone who knows it can occupy a
+free role and deny service, even though they cannot complete the confirmation or read
+payloads. Relay-side admission and rate limits are therefore still required. Room ids
+are not guessable in practice (128 bits).
 
 ## 5. What the relay costs
 

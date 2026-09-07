@@ -22,6 +22,21 @@ services:
       # Danach wird sie getrennt, statt die schnelle Seite auszubremsen.
       RELAY_SEND_QUEUE: "32"
 
+      # Harte Obergrenzen gegen Verbindungs- und Raumfluten. Caddy ist der
+      # einzige Zugang zum internen Container; deshalb darf dessen
+      # X-Forwarded-For-Header fuer die Pro-IP-Grenze verwendet werden.
+      RELAY_MAX_ROOMS: "128"
+      RELAY_MAX_CONNECTIONS: "256"
+      RELAY_MAX_PER_IP: "16"
+      RELAY_TRUST_PROXY: "true"
+
+      # Pro Verbindung: kleine Frames kosten CPU, grosse Bandbreite. Die zwei
+      # Burst-Werte erlauben trotzdem kurze Dateispitzen ohne Dauerlast.
+      RELAY_MESSAGES_PER_SECOND: "64"
+      RELAY_MESSAGE_BURST: "128"
+      RELAY_BYTES_PER_SECOND: "4194304"
+      RELAY_BYTE_BURST: "8388608"
+
       RELAY_IDLE_SECONDS: "90"
       RELAY_PING_SECONDS: "25"
 

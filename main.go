@@ -34,15 +34,45 @@ type config struct {
 	// auszubremsen.
 	sendQueue int
 
+	// maxRooms begrenzt wartende und belegte Raeume. Zusammen mit den
+	// Verbindungsgrenzen verhindert das, dass zufaellige Raumkennungen Zustand
+	// im Speicher ansammeln.
+	maxRooms       int
+	maxConnections int
+	maxPerIP       int
+
+	// Die Obergrenzen fuer eingehende Nutzlast gelten pro Verbindung. Beide
+	// Dimensionen sind noetig: Viele winzige Frames binden CPU, wenige grosse
+	// Frames Bandbreite und Speicher.
+	messagesPerSecond int
+	messageBurst      int
+	bytesPerSecond    int
+	byteBurst         int
+
+	// Hinter dem mitgelieferten Caddy-Setup ist X-Forwarded-For die echte
+	// Clientadresse. Bei einem direkt erreichbaren Relay muss es false bleiben,
+	// damit ein Angreifer seine Adresse nicht selbst behaupten kann.
+	trustProxy bool
+
 	idleTimeout  time.Duration
 	pingInterval time.Duration
 }
 
 func loadConfig() config {
 	c := config{
-		addr:         env("RELAY_ADDR", ":8080"),
-		maxMessage:   int64(envInt("RELAY_MAX_MESSAGE", 1<<20)),
-		sendQueue:    envInt("RELAY_SEND_QUEUE", 32),
+		addr:           env("RELAY_ADDR", ":8080"),
+		maxMessage:     int64(envInt("RELAY_MAX_MESSAGE", 1<<20)),
+		sendQueue:      envInt("RELAY_SEND_QUEUE", 32),
+		maxRooms:       envInt("RELAY_MAX_ROOMS", 128),
+		maxConnections: envInt("RELAY_MAX_CONNECTIONS", 256),
+		maxPerIP:       envInt("RELAY_MAX_PER_IP", 16),
+
+		messagesPerSecond: envInt("RELAY_MESSAGES_PER_SECOND", 64),
+		messageBurst:      envInt("RELAY_MESSAGE_BURST", 128),
+		bytesPerSecond:    envInt("RELAY_BYTES_PER_SECOND", 4<<20),
+		byteBurst:         envInt("RELAY_BYTE_BURST", 8<<20),
+
+		trustProxy:   envBool("RELAY_TRUST_PROXY", false),
 		idleTimeout:  time.Duration(envInt("RELAY_IDLE_SECONDS", 90)) * time.Second,
 		pingInterval: time.Duration(envInt("RELAY_PING_SECONDS", 25)) * time.Second,
 	}
@@ -78,12 +108,28 @@ func envInt(key string, fallback int) int {
 	return n
 }
 
+func envBool(key string, fallback bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return fallback
+	}
+
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		log.Printf("config: %s=%q ist unbrauchbar, nehme %t", key, v, fallback)
+		return fallback
+	}
+
+	return b
+}
+
 func main() {
 	cfg := loadConfig()
-	h := newHub(cfg.sendQueue)
+	h := newHub(cfg.sendQueue, cfg.maxRooms)
+	admission := newAdmission(cfg.maxConnections, cfg.maxPerIP)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/r/", newRelayHandler(h, cfg))
+	mux.HandleFunc("/r/", newRelayHandler(h, cfg, admission))
 
 	// Fuer den Aussenmonitor. Nennt bewusst nur eine Zahl - wer wo verbunden ist,
 	// geht niemanden etwas an, der diesen Pfad abruft.
@@ -100,6 +146,7 @@ func main() {
 		// kappen, egal wie lebendig sie ist. Die Zeitgrenzen fuer offene
 		// Verbindungen setzt der Handler selbst.
 		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    8 << 10,
 	}
 
 	go func() {

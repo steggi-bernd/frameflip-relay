@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -15,7 +16,7 @@ import (
 // Kopplungsschluessel. Laenger waere sinnlos, kuerzer liesse sich durchprobieren.
 const roomIDLength = 32
 
-func newRelayHandler(h *hub, cfg config) http.HandlerFunc {
+func newRelayHandler(h *hub, cfg config, admission *admission) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := roomFrom(r.URL.Path)
 		if !ok {
@@ -28,6 +29,13 @@ func newRelayHandler(h *hub, cfg config) http.HandlerFunc {
 			http.Error(w, "bad role", http.StatusBadRequest)
 			return
 		}
+
+		ip := clientIP(r, cfg.trustProxy)
+		if err := admission.acquire(ip); err != nil {
+			http.Error(w, err.Error(), http.StatusTooManyRequests)
+			return
+		}
+		defer admission.release(ip)
 
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			// Der Relay hat keine Webseite und keine Cookies; es gibt nichts, was
@@ -44,6 +52,25 @@ func newRelayHandler(h *hub, cfg config) http.HandlerFunc {
 
 		serve(r.Context(), h, cfg, conn, id, who)
 	}
+}
+
+// clientIP wertet Forwarded-Header ausschliesslich aus, wenn der Betreiber den
+// einzigen Zugang ueber einen vertrauten Reverse Proxy garantiert. Andernfalls
+// ist RemoteAddr die einzige Adresse, die ein Client nicht faelschen kann.
+func clientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		first, _, _ := strings.Cut(r.Header.Get("X-Forwarded-For"), ",")
+		if candidate := strings.TrimSpace(first); net.ParseIP(candidate) != nil {
+			return candidate
+		}
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+
+	return r.RemoteAddr
 }
 
 // roomFrom liest die Kennung aus /r/{room}.
@@ -108,6 +135,8 @@ func serve(parent context.Context, h *hub, cfg config, conn *websocket.Conn, id 
 
 // readLoop nimmt Nachrichten entgegen und reicht Binaerframes weiter.
 func readLoop(ctx context.Context, h *hub, cfg config, conn *websocket.Conn, id string, self *peer) {
+	limiter := newInboundLimiter(cfg)
+
 	for {
 		// KEINE Frist auf das Lesen.
 		//
@@ -125,7 +154,10 @@ func readLoop(ctx context.Context, h *hub, cfg config, conn *websocket.Conn, id 
 		kind, data, err := conn.Read(ctx)
 
 		if err != nil {
-			_ = conn.Close(websocket.StatusNormalClosure, "")
+			// Close kann auf die Close-Antwort eines Clients warten. Diese Schleife
+			// besitzt aber den Raumslot; ein Client, der gar nicht mehr liest,
+			// duerfte dadurch weder diesen Slot noch seinen Peer festhalten.
+			conn.CloseNow()
 			return
 		}
 
@@ -134,6 +166,13 @@ func readLoop(ctx context.Context, h *hub, cfg config, conn *websocket.Conn, id 
 		// entscheidet, nicht der Inhalt.
 		if kind != websocket.MessageBinary {
 			continue
+		}
+
+		if !limiter.allow(len(data)) {
+			// Wie oben: Die Abmeldung des Peers muss sofort erfolgen. Der Rate-Limit-
+			// Verstoss wartet nicht auf einen Close-Handshake.
+			conn.CloseNow()
+			return
 		}
 
 		// Die Gegenseite jedes Mal frisch holen: Sie kann zwischen zwei Nachrichten
@@ -165,7 +204,7 @@ func writeLoop(ctx context.Context, cancel context.CancelFunc, cfg config, conn 
 			return
 
 		case <-self.done:
-			_ = conn.Close(websocket.StatusPolicyViolation, "too slow")
+			conn.CloseNow()
 			return
 
 		case message := <-self.send:
@@ -174,7 +213,7 @@ func writeLoop(ctx context.Context, cancel context.CancelFunc, cfg config, conn 
 				kind = websocket.MessageText
 			}
 
-			ctxWrite, cancelWrite := context.WithTimeout(ctx, 10*time.Second)
+			ctxWrite, cancelWrite := context.WithTimeout(ctx, cfg.idleTimeout)
 			err := conn.Write(ctxWrite, kind, message.data)
 			cancelWrite()
 
@@ -183,7 +222,7 @@ func writeLoop(ctx context.Context, cancel context.CancelFunc, cfg config, conn 
 			}
 
 		case <-ticker.C:
-			ctxPing, cancelPing := context.WithTimeout(ctx, 10*time.Second)
+			ctxPing, cancelPing := context.WithTimeout(ctx, pingTimeout(cfg))
 			err := conn.Ping(ctxPing)
 			cancelPing()
 
@@ -192,6 +231,15 @@ func writeLoop(ctx context.Context, cancel context.CancelFunc, cfg config, conn 
 			}
 		}
 	}
+}
+
+func pingTimeout(cfg config) time.Duration {
+	// coder/websocket verarbeitet Ping/Pong nur waehrend die Gegenseite liest.
+	// Eine App, die gerade nur wartet, ist trotzdem ein gueltiger Client. Zehn
+	// Sekunden sind die untere Schranke, damit ein kurz pausierter Reader nicht
+	// wie eine tote Verbindung behandelt wird; die normale Vorgabe von 90 Sekunden
+	// bleibt unveraendert wirksam.
+	return max(cfg.idleTimeout, 10*time.Second)
 }
 
 func currentPeer(h *hub, id string, who role) *peer {
@@ -211,7 +259,7 @@ func refuse(ctx context.Context, conn *websocket.Conn, why string) {
 	defer cancel()
 
 	_ = conn.Write(ctxWrite, websocket.MessageText, controlError(why))
-	_ = conn.Close(websocket.StatusPolicyViolation, why)
+	conn.CloseNow()
 }
 
 // ---------------------------------------------------------------- Steuermeldungen

@@ -13,21 +13,33 @@ import (
 
 func testConfig() config {
 	return config{
-		maxMessage:   1 << 20,
-		sendQueue:    8,
-		idleTimeout:  5 * time.Second,
-		pingInterval: 1 * time.Second,
+		maxMessage:        1 << 20,
+		sendQueue:         8,
+		maxRooms:          8,
+		maxConnections:    16,
+		maxPerIP:          8,
+		messagesPerSecond: 1024,
+		messageBurst:      1024,
+		bytesPerSecond:    16 << 20,
+		byteBurst:         16 << 20,
+		idleTimeout:       5 * time.Second,
+		pingInterval:      1 * time.Second,
 	}
 }
 
 func startRelay(t *testing.T) (string, *hub) {
 	t.Helper()
+	return startRelayWithConfig(t, testConfig())
+}
 
-	cfg := testConfig()
-	h := newHub(cfg.sendQueue)
+func startRelayWithConfig(t *testing.T, cfg config) (string, *hub) {
+	t.Helper()
+
+	h := newHub(cfg.sendQueue, cfg.maxRooms)
+	admission := newAdmission(cfg.maxConnections, cfg.maxPerIP)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/r/", newRelayHandler(h, cfg))
+	mux.HandleFunc("/r/", newRelayHandler(h, cfg, admission))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -142,6 +154,53 @@ func TestSecondHostRefused(t *testing.T) {
 	_ = client
 }
 
+// Ein neuer Raum braucht Zustand. Sobald die feste Grenze erreicht ist, wird
+// nur der neue Versuch abgewiesen; der bestehende wartende Host bleibt nutzbar.
+func TestRoomLimitRefusesNewRoom(t *testing.T) {
+	cfg := testConfig()
+	cfg.maxRooms = 1
+	base, _ := startRelayWithConfig(t, cfg)
+
+	first := dial(t, base, testRoom, roleHost)
+	read(t, first)
+
+	otherRoom := "fedcba9876543210fedcba9876543210"
+	second := dial(t, base, otherRoom, roleHost)
+
+	if kind, msg := read(t, second); kind != websocket.MessageText || !strings.Contains(msg, "error") {
+		t.Fatalf("zweiter Raum haette abgewiesen werden muessen: %s", msg)
+	}
+
+	client := dial(t, base, testRoom, roleClient)
+	if _, msg := read(t, first); msg != `{"t":"peer","up":true}` {
+		t.Fatalf("bestehender Raum wurde durch Ablehnung beschaedigt: %s", msg)
+	}
+	_ = client
+}
+
+// Die globale Verbindungsgrenze wird vor dem WebSocket-Upgrade geprueft. Damit
+// verbrauchen abgewiesene Flutversuche weder Raumzustand noch Goroutinen.
+func TestConnectionLimitRefusesUpgrade(t *testing.T) {
+	cfg := testConfig()
+	cfg.maxConnections = 1
+	cfg.maxPerIP = 2
+	base, _ := startRelayWithConfig(t, cfg)
+
+	first := dial(t, base, testRoom, roleHost)
+	read(t, first)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	secondRoom := "fedcba9876543210fedcba9876543210"
+	_, response, err := websocket.Dial(ctx, base+"/r/"+secondRoom+"?role=host", nil)
+	if err == nil {
+		t.Fatal("zweite Verbindung haette vor dem Upgrade abgewiesen werden muessen")
+	}
+	if response == nil || response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("erwartet HTTP 429, bekam %#v", response)
+	}
+}
+
 // Geht eine Seite, erfaehrt die andere es - und der Raum verschwindet.
 func TestPeerLeaves(t *testing.T) {
 	base, h := startRelay(t)
@@ -197,6 +256,29 @@ func TestTextIsNotForwarded(t *testing.T) {
 	}
 }
 
+func TestRateLimitDropsSender(t *testing.T) {
+	cfg := testConfig()
+	cfg.messagesPerSecond = 1
+	cfg.messageBurst = 1
+	base, _ := startRelayWithConfig(t, cfg)
+
+	host := dial(t, base, testRoom, roleHost)
+	read(t, host)
+	client := dial(t, base, testRoom, roleClient)
+	read(t, host)
+	read(t, client)
+
+	write(t, host, websocket.MessageBinary, []byte("erste"))
+	if _, msg := read(t, client); msg != "erste" {
+		t.Fatalf("erste Nachricht fehlt: %s", msg)
+	}
+
+	write(t, host, websocket.MessageBinary, []byte("zu schnell"))
+	if _, msg := read(t, client); msg != `{"t":"peer","up":false}` {
+		t.Fatalf("Sender wurde nach Ratenlimit nicht getrennt: %s", msg)
+	}
+}
+
 // Unsinnige Adressen werden gar nicht erst zu Raeumen.
 func TestRejectsBadAddresses(t *testing.T) {
 	for _, path := range []string{
@@ -248,10 +330,11 @@ func TestSilentPeerSurvivesIdleTimeout(t *testing.T) {
 	cfg.idleTimeout = 600 * time.Millisecond
 	cfg.pingInterval = 200 * time.Millisecond
 
-	h := newHub(cfg.sendQueue)
+	h := newHub(cfg.sendQueue, cfg.maxRooms)
+	admission := newAdmission(cfg.maxConnections, cfg.maxPerIP)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/r/", newRelayHandler(h, cfg))
+	mux.HandleFunc("/r/", newRelayHandler(h, cfg, admission))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
