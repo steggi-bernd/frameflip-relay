@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -127,6 +128,86 @@ func TestForwardsBothWays(t *testing.T) {
 
 	if _, msg := read(t, host); msg != "zurueck" {
 		t.Fatalf("Rueckweg: %s", msg)
+	}
+}
+
+// Die v2-Vektoren werden absichtlich nicht im Relay entschluesselt. Dieser Test
+// beweist seine Rolle im Protokoll: Steuermeldungen bleiben Text vom Relay, und
+// jeder beliebige Binaerframe passiert unveraendert in genau eine Richtung.
+func TestV2TraceForwardsOpaqueFrames(t *testing.T) {
+	base, _ := startRelay(t)
+
+	host := dial(t, base, testRoom, roleHost)
+	if kind, message := read(t, host); kind != websocket.MessageText || message != `{"t":"waiting"}` {
+		t.Fatalf("host waiting: kind=%v message=%q", kind, message)
+	}
+
+	client := dial(t, base, testRoom, roleClient)
+	if kind, message := read(t, host); kind != websocket.MessageText || message != `{"t":"peer","up":true}` {
+		t.Fatalf("host peer up: kind=%v message=%q", kind, message)
+	}
+	if kind, message := read(t, client); kind != websocket.MessageText || message != `{"t":"peer","up":true}` {
+		t.Fatalf("client peer up: kind=%v message=%q", kind, message)
+	}
+
+	trace := []struct {
+		name string
+		from *websocket.Conn
+		to   *websocket.Conn
+		hex  string
+	}{
+		{
+			name: "host hello",
+			from: host,
+			to:   client,
+			hex:  "020102030405060708090a0b0c0d0e0f10",
+		},
+		{
+			name: "client hello",
+			from: client,
+			to:   host,
+			hex:  "02c8c7c6c5c4c3c2c1c0bfbebdbcbbbab9",
+		},
+		{
+			name: "host proof counter 0",
+			from: host,
+			to:   client,
+			hex:  "000000000000000042afa7ac0010fbc7ed549bb70abe72dff29089132d7f7b3414d428cf77979ee65144da862b5288d8121e42f862feb2e4",
+		},
+		{
+			name: "client proof counter 0",
+			from: client,
+			to:   host,
+			hex:  "0000000000000000ef721540948959a82f51bdc57f48a793b352c89fcd2c94d61a34fa98bae8792815f64e205736145d53d736d233a3c92f",
+		},
+		{
+			name: "host application counter 1",
+			from: host,
+			to:   client,
+			hex:  "000000000000000160f51443554daabc863b543103f01b9d0f8a3306a3a2f4ebd6209d15fe",
+		},
+		{
+			name: "client application counter 1",
+			from: client,
+			to:   host,
+			hex:  "00000000000000016de0475377372c0f9342cfb7eee029ebc35254a5f8df4b67782ddae84184a6bd826fea4c1698a57a",
+		},
+	}
+
+	for _, step := range trace {
+		frame, err := hex.DecodeString(step.hex)
+		if err != nil {
+			t.Fatalf("%s: invalid test vector: %v", step.name, err)
+		}
+
+		write(t, step.from, websocket.MessageBinary, frame)
+		kind, got := read(t, step.to)
+		if kind != websocket.MessageBinary {
+			t.Fatalf("%s: forwarded as %v, not binary", step.name, kind)
+		}
+		if got != string(frame) {
+			t.Fatalf("%s: relay changed opaque frame\nwant %x\n got %x", step.name, frame, []byte(got))
+		}
 	}
 }
 

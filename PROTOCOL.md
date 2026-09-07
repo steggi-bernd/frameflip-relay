@@ -119,6 +119,53 @@ the peer authenticated after it can decrypt the proof and it matches the expecte
 and both salts in constant time. Someone who occupies a free room slot can still deny
 service, but cannot make the real endpoint appear paired or receive commands/data.
 
+### v2.0 deterministic conformance vector
+
+This public vector pins the byte-level v2.0 encoding across implementations. It is
+test data, never a live pairing secret. Hex values are lowercase and have no
+separators.
+
+Inputs:
+
+    pairing key (hex):    030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc
+    pairing key (base64): AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw
+    room id:              dc5bf478cd0687cb55a2a0ea208c92a3
+    salt_host:            0102030405060708090a0b0c0d0e0f10
+    salt_client:          c8c7c6c5c4c3c2c1c0bfbebdbcbbbab9
+
+The clear binary hello frames are:
+
+    hello_host:   020102030405060708090a0b0c0d0e0f10
+    hello_client: 02c8c7c6c5c4c3c2c1c0bfbebdbcbbbab9
+
+HKDF produces:
+
+    k_host:   2bc9e65f2ec34761e7ad45a07b447082459673031dbaaaeeedfe8b8c5988441a
+    k_client: bb294b4c98ec57245a38dfa549653763d23028cdbcc6c416424dbedea782de52
+
+The confirmation plaintexts (the HMAC values described above) and complete encrypted
+binary frames are:
+
+    proof_host:       3a2196944745d99953f86e5546196025e45d0726473a3cf8dd5c641bde87a55c
+    host proof ctr 0: 000000000000000042afa7ac0010fbc7ed549bb70abe72dff29089132d7f7b3414d428cf77979ee65144da862b5288d8121e42f862feb2e4
+    proof_client:       e71dfd45149334fc580cbc43b70f8d70831e400715c12dbd78a092f7e1062bf5
+    client proof ctr 0: 0000000000000000ef721540948959a82f51bdc57f48a793b352c89fcd2c94d61a34fa98bae8792815f64e205736145d53d736d233a3c92f
+
+The first application frames are:
+
+    host plaintext ctr 1:   01 || {"t":"idle"}
+    host frame ctr 1:       000000000000000160f51443554daabc863b543103f01b9d0f8a3306a3a2f4ebd6209d15fe
+    client plaintext ctr 1: 01 || {"c":"preview","w":320}
+    client frame ctr 1:     00000000000000016de0475377372c0f9342cfb7eee029ebc35254a5f8df4b67782ddae84184a6bd826fea4c1698a57a
+
+For this vector, the relay transport trace is deterministic too: host receives
+{"t":"waiting"} as text; when the client joins, both receive
+{"t":"peer","up":true} as text; then every binary hello, proof, and application
+frame above is forwarded byte-for-byte in its stated direction. The relay must not
+derive keys, authenticate proofs, inspect counters, or parse application bytes. Its
+only v2.0 responsibility is this opaque binary forwarding and its own text control
+frames.
+
 ### Every frame after that
 
 ```
