@@ -49,7 +49,15 @@ come.
 | `RELAY_ADDR` | `:8080` | listening address |
 | `RELAY_MAX_MESSAGE` | `1048576` | largest single message, in bytes |
 | `RELAY_SEND_QUEUE` | `32` | messages held for a slow peer before it is dropped |
-| `RELAY_IDLE_SECONDS` | `90` | a connection that neither sends nor answers a ping is dropped |
+| `RELAY_MAX_ROOMS` | `128` | rooms held in memory, including rooms waiting for a peer |
+| `RELAY_MAX_CONNECTIONS` | `256` | total open WebSocket connections |
+| `RELAY_MAX_PER_IP` | `16` | simultaneous connections from one client address |
+| `RELAY_TRUST_PROXY` | `false` | use `X-Forwarded-For`; set it only behind a trusted, sole reverse proxy |
+| `RELAY_MESSAGES_PER_SECOND` | `64` | sustained inbound message rate per connection |
+| `RELAY_MESSAGE_BURST` | `128` | short inbound message burst per connection |
+| `RELAY_BYTES_PER_SECOND` | `4194304` | sustained inbound bandwidth per connection |
+| `RELAY_BYTE_BURST` | `8388608` | short inbound bandwidth burst per connection |
+| `RELAY_IDLE_SECONDS` | `90` | maximum time to wait for a ping response (minimum: 10 seconds) |
 | `RELAY_PING_SECONDS` | `25` | keep-alive interval |
 
 `GET /health` answers `{"ok":true,"rooms":N}` — a count and nothing else. Who is
@@ -64,6 +72,14 @@ that someone who guesses a room id can be a nuisance but not a threat:
 * **A taken role is refused, not taken over.** Otherwise anyone knowing the room id
   could displace the real PC — and the room id is not a secret, it is a name.
 * **Message size limit**, **send queue limit**, **idle timeout**.
+* **Room, connection and per-address limits**. Waiting rooms count too, so
+  guessing random room ids cannot grow memory without bound.
+* **Per-connection message and bandwidth limits**, with a small burst for normal
+  transfers. Exceeding either disconnects only the sending connection.
+
+The included Compose setup sets `RELAY_TRUST_PROXY=true` because it exposes no
+relay port: Caddy is its sole path in and supplies the client address. Do not copy
+that setting to a directly reachable relay.
 
 An impostor who joins a room still cannot produce a message the other side accepts:
 AES-GCM checks the authentication tag before anything is interpreted, and a wrong key

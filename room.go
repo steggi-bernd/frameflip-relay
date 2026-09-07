@@ -14,8 +14,10 @@ const (
 )
 
 var (
-	errRoomFull  = errors.New("room is full")
-	errRoleTaken = errors.New("role already taken")
+	errRoleTaken     = errors.New("role already taken")
+	errRoomLimit     = errors.New("relay is busy")
+	errTooManyPeers  = errors.New("relay is busy")
+	errTooManyFromIP = errors.New("too many connections from this address")
 )
 
 // outgoing traegt den Frametyp MIT, statt ihn am Inhalt zu erraten.
@@ -101,13 +103,14 @@ func (r *room) other(who role) *peer {
 // hub verwaltet alle Raeume. Der gesamte Zustand des Dienstes steckt hier drin -
 // und verschwindet mit der letzten Verbindung wieder.
 type hub struct {
-	mu    sync.Mutex
-	rooms map[string]*room
-	queue int
+	mu       sync.Mutex
+	rooms    map[string]*room
+	queue    int
+	maxRooms int
 }
 
-func newHub(queue int) *hub {
-	return &hub{rooms: make(map[string]*room), queue: queue}
+func newHub(queue, maxRooms int) *hub {
+	return &hub{rooms: make(map[string]*room), queue: queue, maxRooms: maxRooms}
 }
 
 // join nimmt eine Verbindung auf. Der zweite Rueckgabewert ist die Gegenseite,
@@ -118,6 +121,10 @@ func (h *hub) join(id string, who role) (*peer, *peer, error) {
 
 	r, ok := h.rooms[id]
 	if !ok {
+		if len(h.rooms) >= h.maxRooms {
+			return nil, nil, errRoomLimit
+		}
+
 		r = &room{}
 		h.rooms[id] = r
 	}
