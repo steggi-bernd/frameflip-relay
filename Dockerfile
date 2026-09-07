@@ -5,7 +5,7 @@
 # Dienst ohne Laufzeitumgebung hat nichts, was gepatcht werden muesste, und nichts,
 # worin sich jemand nach einem Einbruch umsehen koennte.
 
-FROM golang:1.25-alpine AS build
+FROM golang:1.27-alpine AS build
 
 WORKDIR /src
 
